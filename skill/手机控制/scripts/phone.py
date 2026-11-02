@@ -654,11 +654,15 @@ def center(bounds):
     return (x1 + x2) // 2, (y1 + y2) // 2
 
 
+ZW = re.compile("[​‌‍﻿]")
+
+
 def nodes(root):
     out = []
     for n in root.iter("node"):
-        t = (n.get("text") or "").strip()
-        d = (n.get("content-desc") or "").strip()
+        # 清零宽字符：闲鱼的商品标题是 "h​2​00" 这种，直接匹配关键词必然漏
+        t = ZW.sub("", (n.get("text") or "")).replace(" ", " ").strip()
+        d = ZW.sub("", (n.get("content-desc") or "")).replace(" ", " ").strip()
         rid = (n.get("resource-id") or "").strip()
         clickable = n.get("clickable") == "true"
         c = center(n.get("bounds"))
@@ -1324,6 +1328,43 @@ def cmd_devices(ctx, args):
         return 2
     for r in rows:
         print("%-24s %-10s %s" % (r["serial"], r["state"], r.get("model", "")))
+    return 0
+
+
+def cmd_cards(ctx, args):
+    """把当前屏切成"卡片"：同一张商品卡的标题/价格/地区聚成一组。
+
+    解决两条实测问题：详情页价格被拆成 `¥` `4500` `/天` `押金¥4500` 多段；
+    列表页售价/日租/押金混排分不清归属。按 y 坐标聚类，比平铺的 ui 好读。
+    """
+    need(ctx)
+    root = dump_ui(ctx)
+    if root is None:
+        print("UI_DUMP_FAILED")
+        return 3
+    ns = [n for n in nodes(root) if n["y"] > 100]
+    if not ns:
+        print("（本屏没有可读节点）")
+        return 0
+    ns.sort(key=lambda n: n["y"])
+    gap = args.gap
+    blocks, cur = [], [ns[0]]
+    for n in ns[1:]:
+        if n["y"] - cur[-1]["y"] > gap:
+            blocks.append(cur)
+            cur = [n]
+        else:
+            cur.append(n)
+    blocks.append(cur)
+    for i, b in enumerate(blocks, 1):
+        labels = []
+        for n in b:
+            lab = (n["text"] or n["desc"] or "").strip()
+            if lab and lab not in labels:
+                labels.append(lab)
+        if not labels:
+            continue
+        print("%2d | %s" % (i, " ｜ ".join(labels)[:args.width]))
     return 0
 
 
@@ -2101,6 +2142,11 @@ def main():
     s = sub.add_parser("connect")
     s.add_argument("addr", nargs="+")
     s.set_defaults(fn=cmd_connect)
+    s = sub.add_parser("cards", help="把当前屏按卡片分组打印（列表页/详情页更好读）")
+    s.add_argument("--gap", type=int, default=60, help="y 间距超过多少算新卡片，默认 60")
+    s.add_argument("--width", type=int, default=120, help="每行最多多少字，默认 120")
+    s.set_defaults(fn=cmd_cards)
+
     s = sub.add_parser("ui")
     s.add_argument("--filter"); s.add_argument("--limit", type=int, default=40)
     s.add_argument("--clickable", action="store_true")
