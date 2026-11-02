@@ -1,0 +1,34 @@
+# ---- Android ----
+app/**/build/
+app/.gradle/
+app/local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+.cxx/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# ---- 本机配置与凭据（绝不入库）----
+.phone/
+agents.json
+agent_token
+config.json
+*.pem
+*.key
+
+# ---- 运行产物 ----
+*.log
+*.pid
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

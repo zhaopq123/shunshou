@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 无障碍服务配置。关键项说明：
+     canRetrieveWindowContent = 读节点树（/ui 的能力来源）
+     canPerformGestures       = dispatchGesture（/tap、/swipe、/drag 的能力来源，API 24+）
+     accessibilityEventTypes  = 事件驱动，用来维护 epoch 与"最近前台包名"，
+                                这样 expect-* 不必轮询 dump（现在 adb 路径每查一次前台都要起一条 shell）
+     注意：本文件里的能力 = 闲鱼/抖音那类 App 的风控能读到我们就是这个原因（capabilities 可被枚举），
+     这是已登记的产品边界，不是疏漏。见 docs/COMPATIBILITY.md 与 PLAN.md 第一节。
+
+     2026-11-02 更正：早先这里写过"把 flagIncludeNotImportantViews 摘掉、默认关"——**那是错的**。
+     关掉时框架会把 App 标成"无障碍不重要"的中间容器**扁平化**掉（小米内容中心实测 87 节点 vs 开着 209），
+     而 u2 的树是带容器的 144。现在 flag 常驻开（代码里 onServiceConnected 也显式加上），
+     再靠 UiTree 的 visible-to-user 过滤丢掉不可见节点，默认口径才与 u2 逐节点对齐。
+     canTakeScreenshot = /frame 的能力来源（API 30+ 的 takeScreenshot，不需要 MediaProjection、
+     也就不需要每次弹"共享屏幕"同意框）。**少了这一行，运行时调用会直接报
+     "Services don't have the capability of taking the screenshot."**（实测踩过）。
+     flagRetrieveInteractiveWindows 必须留着：摘了就只看得见活动窗口，状态栏/别的包的授权弹窗
+     全看不见（上一版稳定漏读 6 个状态栏节点就是这么来的）。 -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeWindowsChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="true"
+    android:canPerformGestures="true"
+    android:canTakeScreenshot="true"
+    android:canRequestFilterKeyEvents="false"
+    android:description="@string/agent_description"
+    android:notificationTimeout="80"
+    android:packageNames="@null" />

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用名 ≤5 字：桌面上好认、无障碍列表里也一眼能对上。
+         service_name 必须与 app_name 一致（用户明确要求"无障碍那边的名字要跟 App 名字对上"）。-->
+    <string name="app_name">顺手</string>
+    <string name="service_name">顺手</string>
+    <!-- 无障碍设置页里用户会看到的说明文字。写清楚它做什么、要什么，不做隐瞒。 -->
+    <string name="agent_description">顺手：局域网界面代理。读取当前界面节点树、按电脑下发的指令点击/滑动/输入。仅在本人设备上使用，用于自动化重复操作。开启后，已安装的应用可以读到"有无障碍服务在运行"这一状态。</string>
+    <string name="agent_channel">顺手常驻</string>
+</resources>

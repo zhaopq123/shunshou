@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 应用图标（API<26 用的普通矢量版）。图形语义：一台手机 + 里面的终端提示符，
+     表示"这台手机被电脑接管着"。深蓝底 + 青色提示符，缩到 48dp 仍然认得出。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#0F172A"
+        android:pathData="M0,0h108v108h-108z" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M47,26 H61 A9,9 0 0 1 70,35 V73 A9,9 0 0 1 61,82 H47 A9,9 0 0 1 38,73 V35 A9,9 0 0 1 47,26 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M47,47 L56,56 L47,65"
+        android:strokeColor="#38BDF8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M60,65 L68,65"
+        android:strokeColor="#38BDF8"
+        android:strokeLineCap="round"
+        android:strokeWidth="6" />
+</vector>

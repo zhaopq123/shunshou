@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 自适应图标的前景层：只放图形，背景由 ic_launcher.xml 的 background 层负责。
+     图形控制在安全区（18~90）内，被圆形/方形遮罩裁掉也不会缺角。 -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M47,26 H61 A9,9 0 0 1 70,35 V73 A9,9 0 0 1 61,82 H47 A9,9 0 0 1 38,73 V35 A9,9 0 0 1 47,26 Z"
+        android:strokeColor="#FFFFFF"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M47,47 L56,56 L47,65"
+        android:strokeColor="#38BDF8"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:strokeWidth="6" />
+    <path
+        android:fillColor="#00000000"
+        android:pathData="M60,65 L68,65"
+        android:strokeColor="#38BDF8"
+        android:strokeLineCap="round"
+        android:strokeWidth="6" />
+</vector>
