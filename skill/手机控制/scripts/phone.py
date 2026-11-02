@@ -350,6 +350,15 @@ class Ctx:
         return p.stdout.decode("utf-8", "replace")
 
     def sh(self, cmd, timeout=90):
+        """shell 只有 adb 通道有。agent 通道没有 shell 路由，
+        上一版会静默返回空串，害得脚本以为"应用起来了""包名查到了"（实测踩过两次）。
+        现在明确抛错，让调用方看见。"""
+        if getattr(self, "_agent", None) is None:
+            self._agent = use_agent(self)
+        if self._agent:
+            raise RuntimeError(
+                "TRANSPORT_UNSUPPORTED: agent 通道没有 shell（命令：%s）。"
+                "要么用 --transport adb，要么把 agent_host 去掉。" % cmd[:60])
         return self.raw(["-s", self.serial, "shell", cmd], timeout=timeout)
 
 
@@ -759,8 +768,15 @@ def press(ctx, x, y, ms=80):
                               timeout=30)
         if st == 200:
             return
-        # TAP_UNCONFIRMED 也**不**降级去 adb：两套动作混着打会把界面搞成半截状态，
-        # 而且掩盖了真正的问题（该节点不可交互 / 这一屏需要真实触摸序列）。
+        # TAP_UNCONFIRMED = "没能确认"，不等于"没点到"：点输入框、点静态区域都不会产生窗口事件。
+        # 先重试一次；仍不确认就**警告并继续**，不再直接中断整条命令（实测这样误杀过正常点击）。
+        if "TAP_UNCONFIRMED" in body:
+            st2, body2 = agent_call(ctx, "POST", "/tap",
+                                    {"x": int(x), "y": int(y), "ms": int(ms)}, timeout=30)
+            if st2 == 200:
+                return
+            print("TAP_UNCONFIRMED @%d,%d（可能已生效，界面无变化无法确认）" % (x, y))
+            return
         raise SystemExit("AGENT_TAP_FAILED %s: %s" % (st, body[:160]))
     d = u2_device(ctx)
     if d is not None:
@@ -924,12 +940,25 @@ def type_text(ctx, text):
         st, body = agent_call(ctx, "POST", "/text", {"text": text}, timeout=30)
         if st == 200:
             return True
+        # 自绘输入框（闲鱼/部分 Flutter 页）在无障碍树里没有可编辑节点，
+        # ACTION_SET_TEXT 必然失败。这时自动降级走 ADBKeyboard 广播（需要 adb 在）。
+        # NO_EDITABLE = 找不到可编辑节点；TYPE_UNCONFIRMED = 写进去了但回读为空。
+        # 两种都说明这个输入框不吃 ACTION_SET_TEXT（闲鱼、部分 Flutter 页），一律降级。
+        if "NO_EDITABLE" in body or "TYPE_UNCONFIRMED" in body:
+            print("（输入框是自绘控件，无障碍写不进去 → 降级用 ADBKeyboard 广播）")
+            return type_via_ime(ctx, text)
         print("AGENT_TYPE_FAILED %s: %s" % (st, body[:160]))
         return False
     if is_ascii(text) and text.strip():
         esc = text.replace(" ", "%s").replace("'", "\\'")
         ctx.sh("input text '%s'" % esc, timeout=40)
         return True
+    return type_via_ime(ctx, text)
+
+
+def type_via_ime(ctx, text):
+    """用 ADBKeyboard 广播注入。自绘输入框、中文、emoji 都靠它。
+    IME 的恢复放在 finally：中途失败也必须把输入法切回去（上一版失败就留在 ADBKeyboard）。"""
     have = ctx.sh("pm list packages com.android.adbkeyboard", timeout=25)
     if "adbkeyboard" not in have:
         print("NEED_IME：中文/emoji 只能靠 ADBKeyboard 注入，本机还没装。跑：")
@@ -937,13 +966,18 @@ def type_text(ctx, text):
         print("  phone.py ime install D:/x/ADBKeyboard.apk")
         return False
     before = cur_ime(ctx)
-    esc = text.replace("\\", "\\\\").replace("'", "\\'")
-    ctx.sh("ime enable %s; ime set %s; sleep 0.35; "
-           "am broadcast -a ADB_INPUT_TEXT --es msg '%s' >/dev/null; sleep 0.35"
-           % (ADB_IME, ADB_IME, esc), timeout=90)
-    if before and before != ADB_IME:
-        ctx.sh("ime set %s" % before, timeout=25)
-    return True
+    esc = text.replace("\\", "\\\\").replace("'", "\'")
+    try:
+        ctx.sh("ime enable %s; ime set %s; sleep 0.4" % (ADB_IME, ADB_IME), timeout=60)
+        ctx.sh("am broadcast -a ADB_INPUT_TEXT --es msg '%s' >/dev/null" % esc, timeout=60)
+        time.sleep(0.4)
+        return True
+    finally:
+        if before and before != ADB_IME:
+            try:
+                ctx.sh("ime set %s" % before, timeout=25)
+            except Exception:
+                pass
 
 
 def scroll(ctx, direction="down", times=1):
@@ -1187,6 +1221,7 @@ def install_apk(ctx, apk, timeout=120):
 
 
 def cmd_ime(ctx, args):
+    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
     need(ctx)
     if args.action == "status":
         print("当前输入法: %s" % (cur_ime(ctx) or "?"))
@@ -1203,6 +1238,17 @@ def cmd_ime(ctx, args):
         installed = "adbkeyboard" in pk
         print("ADBKeyboard: %s" % ("已装" if installed else "未装"))
         return 0 if installed else 1
+    elif args.action == "restore":
+        # 上一版 type 失败后会把手机留在 ADBKeyboard（没有可见键盘，等于打不了字）。
+        # restore = 把所有已启用的输入法列出来，挑一个不是 ADBKeyboard 的切回去。
+        out = ctx.sh("ime list -s", timeout=25)
+        cands = [x.strip() for x in out.splitlines()
+                 if x.strip() and "adbkeyboard" not in x.lower()]
+        if not cands:
+            print("没有可恢复的输入法（只启用了 ADBKeyboard）")
+            return 1
+        ctx.sh("ime set %s" % cands[0], timeout=25)
+        print("已恢复输入法: %s" % cands[0])
     elif args.action == "list":
         out = ctx.sh("ime list -s", timeout=25)
         for line in (out or "").splitlines():
@@ -1320,6 +1366,13 @@ def cmd_ui(ctx, args):
 def cmd_tap(ctx, args):
     need(ctx)
     text = " ".join(args.text)
+    # 支持 ph tap 360,800 直接点坐标（以前只能 ph act "tap:360,800"，很多人不知道）
+    m = re.fullmatch(r"\s*(\d+)\s*,\s*(\d+)\s*", text)
+    if m:
+        x, y = int(m.group(1)), int(m.group(2))
+        press(ctx, x, y, max(1, int(args.ms or 80)))
+        print("TAPPED @%d,%d（坐标）" % (x, y))
+        return 0
     root = dump_ui(ctx)
     if root is None:
         if args.by in ("auto", "text"):
@@ -1974,6 +2027,7 @@ def cmd_focus(ctx, args):
 
 
 def cmd_app(ctx, args):
+    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
     need(ctx)
     ctx.sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % args.package, timeout=30)
     print("LAUNCHED %s" % args.package)
@@ -1995,6 +2049,7 @@ def cmd_drag(ctx, args):
 
 
 def cmd_install(ctx, args):
+    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
     need(ctx)
     ok, out = install_apk(ctx, args.apk, args.timeout)
     print(out or "（pm install 无输出）")
@@ -2002,6 +2057,7 @@ def cmd_install(ctx, args):
 
 
 def cmd_stop(ctx, args):
+    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
     need(ctx)
     ctx.sh("am force-stop %s" % args.package, timeout=30)
     print("STOPPED %s" % args.package)
@@ -2009,6 +2065,7 @@ def cmd_stop(ctx, args):
 
 
 def cmd_open(ctx, args):
+    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
     need(ctx)
     out = (ctx.sh("am start -a android.intent.action.VIEW -d '%s'" % args.url, timeout=40)
            or "").strip()
@@ -2038,7 +2095,7 @@ def main():
     sub.add_parser("devices").set_defaults(fn=cmd_devices)
     sub.add_parser("wake").set_defaults(fn=cmd_wake)
     s = sub.add_parser("ime")
-    s.add_argument("action", choices=["status", "list", "fix", "install", "set"])
+    s.add_argument("action", choices=["status", "list", "fix", "install", "set", "restore"])
     s.add_argument("apk", nargs="?")
     s.set_defaults(fn=cmd_ime)
     s = sub.add_parser("connect")
@@ -2100,7 +2157,11 @@ def main():
 
     args = p.parse_args()
     ctx = Ctx(args)
-    sys.exit(args.fn(ctx, args))
+    try:
+        sys.exit(args.fn(ctx, args))
+    except RuntimeError as e:
+        print(str(e))
+        sys.exit(3)
 
 
 if __name__ == "__main__":

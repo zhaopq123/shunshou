@@ -272,7 +272,10 @@ else: / endif:           # 条件和循环的闭合
 | `BAD_STEPS` | batch 的 `if`/`repeat`/`retry` 缺 `endif:` 或 `end:` |
 | `AGENT_OFFLINE` | `--transport agent` 但连不上：确认手机和电脑同网段、手机上看一眼 agent 前台通知是否还在、`PHONE_AGENT_HOST` 有没有配 |
 | `AGENT_TAP_FAILED` | 动作被服务端判定"没让界面变化"（`TAP_UNCONFIRMED`）：该节点不可交互，或这页需要真实触摸序列。**不会**偷偷降级去 adb |
-| `TRANSPORT_UNSUPPORTED` | agent 通道没实现该能力（功能键、`app:`、`shot`、`install`）：加 adb 或换 `--transport adb` |
+| `TRANSPORT_UNSUPPORTED` | agent 通道没有 shell。`sh`/`ime`/`app`/`install`/`stop`/`open` 会自动强制走 adb；其余命令加 `--transport adb` |
+| `TAP_UNCONFIRMED` | 点到了但界面没变化，无法确认。脚本会重试一次，仍不确认只警告不中断 |
+| 输入框是自绘控件（闲鱼等） | `/text` 写不进去时**自动降级**为 ADBKeyboard 广播，无需手动切通道 |
+| 输入法卡在 ADBKeyboard | `ph ime restore` 一键切回原输入法 |
 
 ## 平台边界
 
