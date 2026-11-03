@@ -12,9 +12,12 @@ android {
         // API 24 是硬地板：dispatchGesture 与 ACTION_SET_TEXT 都要 24+
         // （docs/COMPATIBILITY.md 的能力阶梯；低于 24 只读不写，本 App 直接拒绝安装）
         minSdk = 24
-        targetSdk = 34
-        versionCode = 15
-        versionName = "1.3.0"
+        // 33 而不是 34：Android 14 起禁止 targetSdk>33 的应用读 Settings.Secure.enabled_input_methods，
+        // 而自带输入法注入正是靠读这个 key 拿"当前启用的输入法列表"。实测报错原文：
+        // "Settings key: <enabled_input_methods> is only readable to apps with targetSdkVersion <= 33"
+        targetSdk = 33
+        versionCode = 19
+        versionName = "1.4.3"
     }
 
     buildTypes {

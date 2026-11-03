@@ -380,6 +380,7 @@ class AgentService : AccessibilityService() {
             method == "GET" && path == "/volume" ->
                 jsonResp(Caps.volume(this, qParam(query, "stream").ifEmpty { "music" }, null, null))
             method == "POST" && path == "/volume" -> postVolume(body)
+            method == "POST" && path == "/ime" -> postIme(body)
             else -> Resp("ERR", "application/json", json("error" to "NO_ROUTE", "path" to path).toString())
         }
     }
@@ -441,6 +442,18 @@ class AgentService : AccessibilityService() {
         val delta = if (o.has("delta")) o.optInt("delta") else null
         val percent = if (o.has("percent")) o.optInt("percent") else null
         return jsonResp(Caps.volume(this, o.optString("stream", "music"), delta, percent))
+    }
+
+    /** 自带输入法注入文字：ACTION_SET_TEXT 写不进的自绘输入框走这条 */
+    private fun postIme(body: String): Resp {
+        val o = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+        val key = o.optString("key", "")
+        if (key.isNotEmpty()) return jsonResp(Caps.imeKey(this, key))
+        val text = o.optString("text", "")
+        if (text.isEmpty()) {
+            return Resp("BAD_REQ", "application/json", json("error" to "NEED_TEXT").toString())
+        }
+        return jsonResp(Caps.imeType(this, text))
     }
 
     /**
@@ -985,7 +998,7 @@ class AgentService : AccessibilityService() {
         val (w, h) = uiSize()
         return arrayOf(
             "api" to Build.VERSION.SDK_INT,
-            "build" to "v15-caps",           // 装了哪一版的凭据（免得以为跑的是新包其实是旧的）
+            "build" to "v19-key",           // 装了哪一版的凭据（免得以为跑的是新包其实是旧的）
             "release" to Build.VERSION.RELEASE,
             "model" to Build.MODEL,
             "brand" to Build.BRAND,

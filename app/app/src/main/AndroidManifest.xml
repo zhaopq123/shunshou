@@ -67,5 +67,20 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="lan-ui-automation-agent" />
         </service>
+
+        <!-- 极简输入法：零 adb 下往自绘/WebView 输入框写字的唯一可靠通道。
+             不画键盘，只在被选中时用 InputConnection.commitText 注入文字，用完切回原输入法。 -->
+        <service
+            android:name=".AgentImeService"
+            android:exported="true"
+            android:label="顺手输入"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.inputmethod.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/agent_ime" />
+        </service>
     </application>
 </manifest>

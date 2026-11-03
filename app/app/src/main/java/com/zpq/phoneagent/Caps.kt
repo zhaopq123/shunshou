@@ -320,4 +320,113 @@ object Caps {
             .put("volume", am.getStreamVolume(s))
             .put("max", am.getStreamMaxVolume(s))
     }
+
+    /**
+     * 用自带输入法往当前焦点写字 —— 零 adb 下唯一能写进**自绘/WebView 输入框**的通道。
+     *
+     * 流程：把自己的 IME 加进 enabled 列表 → 设为默认 → 等系统把 InputConnection 交过来 →
+     * commitText → 立刻切回用户原来的输入法。
+     * 需要 WRITE_SECURE_SETTINGS（adb 一次性 pm grant），否则改不动默认输入法，直接报错不假装成功。
+     */
+    fun imeType(ctx: Context, text: String): JSONObject = try {
+        imeTypeInner(ctx, text)
+    } catch (e: Exception) {
+        // 整个流程包一层：切换输入法 / 读 Settings 都可能抛非 SecurityException 的运行时异常，
+        // 之前没包，异常直接穿过 route 导致 HTTP 直接断连（客户端报"连接被意外关闭"、服务端连日志都没写）
+        JSONObject().put("ok", false)
+            .put("error", "IME_ERROR")
+            .put("detail", e.message ?: e.javaClass.simpleName)
+    }
+
+    private fun imeTypeInner(ctx: Context, text: String): JSONObject {
+        val cr = ctx.contentResolver
+        val me = ctx.packageName + "/" + AgentImeService::class.java.name
+        val cur = Settings.Secure.getString(cr, Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+        val enabled = Settings.Secure.getString(cr, Settings.Secure.ENABLED_INPUT_METHODS) ?: ""
+        val set = enabled.split(':').map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+        set.add(me)
+        try {
+            Settings.Secure.putString(cr, Settings.Secure.ENABLED_INPUT_METHODS, set.joinToString(":"))
+            Settings.Secure.putString(cr, Settings.Secure.DEFAULT_INPUT_METHOD, me)
+        } catch (e: SecurityException) {
+            return JSONObject().put("ok", false)
+                .put("error", "NEED_WRITE_SECURE_SETTINGS")
+                .put("hint", "改默认输入法需要 WRITE_SECURE_SETTINGS（adb 一次性 pm grant）")
+        }
+        var committed = false
+        var prepCalled = false
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < 4000) {
+            // 关键：切默认输入法本身不会触发绑定，必须由 IME 自己 requestShowSelf 逼系统重新交连接
+            if (!prepCalled && AgentImeService.prepare()) prepCalled = true
+            if (AgentImeService.connected()) {
+                committed = AgentImeService.commit(text)
+                if (committed) break
+            }
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                break
+            }
+        }
+        try {
+            Thread.sleep(150)
+        } catch (e: InterruptedException) {
+        }
+        if (cur.isNotEmpty() && cur != me) {
+            try {
+                Settings.Secure.putString(cr, Settings.Secure.DEFAULT_INPUT_METHOD, cur)
+            } catch (e: Exception) {
+            }
+        }
+        return JSONObject().put("ok", committed)
+            .put("restored", cur)
+            .put("hint", if (!committed) "输入框没聚焦（先点一下输入框再调用 /ime）" else "")
+    }
+
+    /**
+     * 用输入法通道发按键（目前只有 enter）。
+     * 用途见 [AgentImeService.sendEnter]：绕开"注入触摸被标记为非真实输入"的提交按钮。
+     */
+    fun imeKey(ctx: Context, key: String): JSONObject = try {
+        val cr = ctx.contentResolver
+        val me = ctx.packageName + "/" + AgentImeService::class.java.name
+        val cur = Settings.Secure.getString(cr, Settings.Secure.DEFAULT_INPUT_METHOD) ?: ""
+        val enabled = Settings.Secure.getString(cr, Settings.Secure.ENABLED_INPUT_METHODS) ?: ""
+        val set = enabled.split(':').map { it.trim() }.filter { it.isNotEmpty() }.toMutableSet()
+        set.add(me)
+        Settings.Secure.putString(cr, Settings.Secure.ENABLED_INPUT_METHODS, set.joinToString(":"))
+        Settings.Secure.putString(cr, Settings.Secure.DEFAULT_INPUT_METHOD, me)
+        var ok = false
+        val t0 = System.currentTimeMillis()
+        while (System.currentTimeMillis() - t0 < 3000) {
+            AgentImeService.prepare()
+            if (AgentImeService.instance != null) {
+                ok = when (key) {
+                    "enter" -> AgentImeService.sendKey(android.view.KeyEvent.KEYCODE_ENTER)
+                    "tab" -> AgentImeService.sendKey(android.view.KeyEvent.KEYCODE_TAB)
+                    "down" -> AgentImeService.sendKey(android.view.KeyEvent.KEYCODE_DPAD_DOWN)
+                    "up" -> AgentImeService.sendKey(android.view.KeyEvent.KEYCODE_DPAD_UP)
+                    else -> false
+                }
+                if (ok) break
+            }
+            try {
+                Thread.sleep(100)
+            } catch (e: InterruptedException) {
+                break
+            }
+        }
+        if (cur.isNotEmpty() && cur != me) {
+            try {
+                Settings.Secure.putString(cr, Settings.Secure.DEFAULT_INPUT_METHOD, cur)
+            } catch (e: Exception) {
+            }
+        }
+        JSONObject().put("ok", ok).put("key", key).put("restored", cur)
+            .put("hint", if (!ok) "输入法没切过去，或系统没激活它" else "")
+    } catch (e: Exception) {
+        JSONObject().put("ok", false).put("error", "IME_KEY_ERROR")
+            .put("detail", e.message ?: e.javaClass.simpleName)
+    }
 }

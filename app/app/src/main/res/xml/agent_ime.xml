@@ -1,0 +1,3 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 极简输入法配置：只声明自己是输入法，不带 subtype、不带设置页 -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android" />
