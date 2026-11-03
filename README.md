@@ -49,8 +49,10 @@ adb install -r 顺手.apk          # 或把 APK 传到手机点开安装
 mkdir -p ~/.phone && printf '%s' '<token>' > ~/.phone/agent_token
 ```
 
-**3. 开启无障碍**：设置 → 无障碍 → 已下载的应用 → 顺手 → 打开。
-HyperOS/MIUI 若提示"受限设置"，见 [`docs/INSTALL.md`](docs/INSTALL.md) 第 4 步。
+**3. 开启权限**：打开「顺手」→「权限」页 → **一键开启全部**。
+它会把无障碍、插电常亮、息屏超时、电池白名单、通知、自启动逐项处理掉；
+每一项旁边都有「去开启」可单独跳转，细节见下方「权限中心」一节。
+HyperOS/MIUI 若提示"受限设置/未知来源"，见 [`docs/INSTALL.md`](docs/INSTALL.md) 第 4 步。
 
 **4. 电脑端找手机**
 
@@ -87,6 +89,31 @@ ph agents                                        列出已登记的手机
 ```
 
 完整命令与选择器规则见 [`skill/手机控制/SKILL.md`](skill/手机控制/SKILL.md)。
+
+---
+
+## 权限中心
+
+主界面分「概览 / 权限 / 设置」三页，权限页负责把「电脑要能操控手机」所需的系统设置一次配好。
+
+| 项 | 为什么需要 |
+|---|---|
+| 无障碍服务 | 读屏、点按、输入全靠它；关着＝电脑只能看不能动 |
+| 电池白名单 | 熄屏后不被系统冻结，HTTP 端口才不会失联 |
+| 通知权限 | 前台常驻通知；进程被杀时能第一时间看到 |
+| 插电常亮 | 插着线时屏幕不灭，无线调试不会断线 |
+| 息屏超时 ≥10 分钟 | 黑屏前留够时间，别刚连上就断 |
+| 自启动 / 后台 | 重启后自己爬起来（系统页里才能确认，标「需手动」） |
+
+**一键开启全部**：按「无障碍 → 常亮 → 超时 → 电池 → 通知 → 自启动」顺序推进，
+能直写的直接写，需要人确认的弹系统页，从设置页返回后自动进入下一步。
+**一键关闭全部**：反序执行，并把开启时改过的 `stay_on_while_plugged_in`、`screen_off_timeout`
+还原成备份值。
+
+`adb` 一次性执行 `pm grant com.zpq.phoneagent android.permission.WRITE_SECURE_SETTINGS` 后，
+无障碍、常亮、超时三项由 App 直接写 `Settings`，**绕过 MIUI「未知来源应用拒绝敏感权限」的 UI 层拦截**——
+这正是 sideload 的 App 在「无障碍」开关上被系统拒绝时的解法。没这条授权时，
+权限页会把「未知来源敏感权限」标成 `需手动` 并给跳转。
 
 ---
 
@@ -138,7 +165,8 @@ app/                  Android 工程（Gradle）
   app/src/main/java/com/zpq/phoneagent/
     AgentService.kt   无障碍服务 + HTTP 服务端 + 动作执行
     UiTree.kt         节点树 → 与 uiautomator 同 schema 的 XML
-    MainActivity.kt   界面（显示本机地址、状态、别名）
+    MainActivity.kt   界面（概览 / 权限 / 设置 三页）
+    GrantCenter.kt    权限中心：一键开/关，逐项状态与跳转
 skill/手机控制/       电脑端技能包
   scripts/phone.py    全部 CLI
   SKILL.md            命令表与踩坑记录

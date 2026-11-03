@@ -89,6 +89,13 @@ v5 起加 `flag_include_not_important`、`default_tree`）。
 新设备接入跑 `ph agent-doctor` 时以它为准，**按能力分支、不按机型分支**。
 `build` 字段是"装的到底是哪一版"的凭据——**每次改源码必须 bump**，否则分不清新包旧包。
 
+### `GET /wake[?keep=1]`
+点亮屏幕并解掉**滑动锁**。`keep=1` 表示保持亮屏 10 分钟（`ON_AFTER_RELEASE`）。
+返回 `{screen_on, keyguard_dismissed, secure, note}`。
+`secure=true` 表示是密码/指纹锁，App **解不开也不想解**（那是系统安全边界，只如实回报）。
+
+> 未加 `?keep` 时只点一次屏，灭屏时间按系统设置走。
+
 ### `GET /selftest`
 ```
 {"pass":false,"port":8712,"checks":[

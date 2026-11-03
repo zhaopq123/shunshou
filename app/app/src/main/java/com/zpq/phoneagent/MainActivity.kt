@@ -49,6 +49,11 @@ class MainActivity : android.app.Activity() {
     private lateinit var tokenText: TextView
     private lateinit var aliasEdit: EditText
     private lateinit var logText: TextView
+    private lateinit var grantItems: LinearLayout
+    private var grantSig = ""
+    private lateinit var tabBtns: List<Button>
+    private lateinit var tabPages: List<LinearLayout>
+    private var curTab = 0
 
     private fun dp(v: Int) = (resources.displayMetrics.density * v).toInt()
 
@@ -127,6 +132,35 @@ class MainActivity : android.app.Activity() {
         root.addView(head)
         root.addView(gap(20))
 
+        // ---- 分类页：概览 / 权限 / 设置 ----
+        // 一页只装一块，别让人一路往下滚。切换只改可见性，不重建视图。
+        val mkPage = { LinearLayout(this).apply { orientation = LinearLayout.VERTICAL } }
+        val page1 = mkPage()
+        val page2 = mkPage()
+        val page3 = mkPage()
+        tabPages = listOf(page1, page2, page3)
+
+        val tabBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        tabBtns = listOf("概览", "权限", "设置").mapIndexed { i, t ->
+            Button(this).apply {
+                text = t
+                isAllCaps = false
+                textSize = 14f
+                stateListAnimator = null
+                minHeight = dp(40)
+                setOnClickListener { selectTab(i) }
+                layoutParams = LinearLayout.LayoutParams(0, dp(40), 1f).apply {
+                    if (i > 0) leftMargin = dp(8)
+                }
+            }
+        }
+        tabBtns.forEach { tabBar.addView(it) }
+        root.addView(tabBar)
+        root.addView(gap(14))
+        root.addView(page1)
+        root.addView(page2)
+        root.addView(page3)
+
         // ---- 地址卡 ----
         val addrCard = card()
         addrCard.addView(label("本机地址"))
@@ -144,8 +178,8 @@ class MainActivity : android.app.Activity() {
             Toast.makeText(this, "已复制", Toast.LENGTH_SHORT).show()
         }.apply { layoutParams = LinearLayout.LayoutParams(0, dp(44), 1f) })
         addrCard.addView(copyRow)
-        root.addView(addrCard)
-        root.addView(gap(14))
+        page1.addView(addrCard)
+        page1.addView(gap(14))
 
         // ---- 状态卡 ----
         val statusCard = card()
@@ -161,8 +195,29 @@ class MainActivity : android.app.Activity() {
         statusCard.addView(row(null, txtTree))
         txtVersion = body("", 13f, cMuted)
         statusCard.addView(row(null, txtVersion))
-        root.addView(statusCard)
-        root.addView(gap(14))
+        page1.addView(statusCard)
+        page1.addView(gap(14))
+
+        // ---- 权限卡：一键开 / 一键关 ----
+        // 顺序是刻意的：先直写能写的（有无 WRITE_SECURE_SETTINGS 决定），
+        // 再弹需要人确认的（电池、通知），最后跳小米的自启动页。
+        val grantCard = card()
+        grantCard.addView(label("权限 · 顺手要能干活，得先放开这些"))
+        grantItems = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        grantCard.addView(grantItems.apply {
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { topMargin = dp(8) }
+        })
+        grantCard.addView(gap(12))
+        val grantBtnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        grantBtnRow.addView(action("一键开启全部", true) { GrantCenter.start(this, true) }
+            .apply { layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f) })
+        grantBtnRow.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(10), 1) })
+        grantBtnRow.addView(action("一键关闭全部", false) { GrantCenter.start(this, false) }
+            .apply { layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f) })
+        grantCard.addView(grantBtnRow)
+        page2.addView(grantCard)
 
         // ---- 别名卡 ----
         val aliasCard = card()
@@ -187,18 +242,18 @@ class MainActivity : android.app.Activity() {
             Toast.makeText(this, "已保存", Toast.LENGTH_SHORT).show()
             refresh()
         }.apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(44)) })
-        root.addView(aliasCard)
-        root.addView(gap(14))
+        page3.addView(aliasCard)
+        page3.addView(gap(14))
 
         // ---- 操作 ----
-        root.addView(action("开启无障碍服务", true) {
+        page1.addView(action("开启无障碍服务", true) {
             try {
                 startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
             } catch (e: Exception) {
                 Toast.makeText(this, "打不开设置页：${e.message}", Toast.LENGTH_LONG).show()
             }
         }.apply { layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, dp(52)) })
-        root.addView(gap(10))
+        page1.addView(gap(10))
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row2.addView(action("生成/清除 token", false) {
             val cur = AgentPrefs.token(this)
@@ -208,8 +263,8 @@ class MainActivity : android.app.Activity() {
         row2.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(dp(10), 1) })
         row2.addView(action("重新自检", false) { refresh() }
             .apply { layoutParams = LinearLayout.LayoutParams(0, dp(48), 1f) })
-        root.addView(row2)
-        root.addView(gap(14))
+        page1.addView(row2)
+        page1.addView(gap(14))
 
         // ---- token ----
         val tokenCard = card()
@@ -219,8 +274,8 @@ class MainActivity : android.app.Activity() {
             typeface = android.graphics.Typeface.MONOSPACE
         }
         tokenCard.addView(tokenText)
-        root.addView(tokenCard)
-        root.addView(gap(14))
+        page3.addView(tokenCard)
+        page3.addView(gap(14))
 
         // ---- 日志 ----
         val logCard = card()
@@ -230,12 +285,26 @@ class MainActivity : android.app.Activity() {
             typeface = android.graphics.Typeface.MONOSPACE
         }
         logCard.addView(logText)
-        root.addView(logCard)
+        page3.addView(logCard)
 
         val scroll = ScrollView(this).apply { setBackgroundColor(cBg) }
         scroll.addView(root)
         setContentView(scroll)
+        selectTab(0)
         refresh()
+    }
+
+    /** 切页：只改可见性与按钮样式，不重建视图（否则滚动位置和输入焦点都会丢） */
+    private fun selectTab(i: Int) {
+        curTab = i
+        tabPages.forEachIndexed { idx, p ->
+            p.visibility = if (idx == i) View.VISIBLE else View.GONE
+        }
+        tabBtns.forEachIndexed { idx, b ->
+            val on = idx == i
+            b.background = if (on) rounded(cPrimary, 12) else rounded(0xFFEFF3F8.toInt(), 12)
+            b.setTextColor(if (on) Color.WHITE else cMuted)
+        }
     }
 
     private fun row(dot: View?, text: TextView): LinearLayout =
@@ -272,6 +341,63 @@ class MainActivity : android.app.Activity() {
 
         val tail = AgentLog.tail(this, 12).trim()
         logText.text = tail.ifEmpty { "（还没有调用）" }
+
+        if (::grantItems.isInitialized) {
+            val items = GrantCenter.items(this)
+            val sig = items.joinToString("|") { "${it.key}:${it.state}" } +
+                    "|" + GrantCenter.hasSecure(this)
+            // 只在状态变化时重建：两秒一次的刷新如果每次都重建，
+            // 正好点在「去开启」上会被换掉，表现为"点了没反应"
+            if (sig != grantSig) {
+                grantSig = sig
+                grantItems.removeAllViews()
+                for (it in items) {
+                    val (mark, color) = when (it.state) {
+                        GrantCenter.ON -> "已开" to cOk
+                        GrantCenter.OFF -> "未开" to cBad
+                        else -> "需手动" to cMuted
+                    }
+                    grantItems.addView(grantRow(it, mark, color))
+                }
+                if (!GrantCenter.hasSecure(this)) {
+                    grantItems.addView(gap(8))
+                    grantItems.addView(body(
+                        "没拿到 WRITE_SECURE_SETTINGS：上面几项只能跳设置页手点。" +
+                                "电脑上跑一次 adb pm grant 之后，「一键开启全部」就能直接生效。",
+                        11f, cMuted
+                    ))
+                }
+            }
+        }
+    }
+
+    /** 权限清单一行：左边标题+状态+为什么需要，右边「去开启」直达系统页 */
+    private fun grantRow(item: GrantCenter.Item, mark: String, color: Int): LinearLayout {
+        val line = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setPadding(0, dp(5), 0, dp(5))
+        }
+        val left = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        left.addView(body("${item.title}  $mark", 13f, color, true))
+        val desc = item.desc + if (item.note.isEmpty()) "" else "（${item.note}）"
+        left.addView(body(desc, 11f, cMuted))
+        line.addView(left)
+        if (item.state != GrantCenter.ON) {
+            line.addView(body("去开启 ›", 12f, cPrimary).apply {
+                setPadding(dp(10), dp(8), dp(2), dp(8))
+                setOnClickListener {
+                    if (!GrantCenter.openOne(this@MainActivity, item.key)) {
+                        Toast.makeText(this@MainActivity, "这个页面打不开，去应用详情里找",
+                            Toast.LENGTH_SHORT).show()
+                    }
+                }
+            })
+        }
+        return line
     }
 
     private val ticker = android.os.Handler(android.os.Looper.getMainLooper())
@@ -282,10 +408,22 @@ class MainActivity : android.app.Activity() {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // 通知权限弹窗回来：让权限队列继续往下走
+        GrantCenter.resume(this)
+    }
+
     override fun onResume() {
         super.onResume()
         // 从无障碍设置页回来时刷新一下，别让用户以为没生效
         if (::addrValue.isInitialized) refresh()
+        // 一键授权是多步的：从任何一个设置页/弹窗回来都要接着推进
+        GrantCenter.resume(this)
         ticker.removeCallbacks(tick)
         ticker.postDelayed(tick, 2000)   // 之后每 2 秒自刷：epoch/前台 不再是打开那一刻的快照
     }

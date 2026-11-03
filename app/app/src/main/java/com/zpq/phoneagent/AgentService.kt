@@ -77,6 +77,10 @@ class AgentService : AccessibilityService() {
     private val reqId = AtomicInteger(0)
     @Volatile private var lastEventAt = 0L
 
+    /** 常驻唤醒锁：只挡 CPU/网络休眠，不点屏幕（点屏另走 /wake）。
+     *  之前没有它 ⇒ 手机深度休眠后 HTTP 直接失联，PC 侧表现为"mDNS 在广播但端口拒连"。 */
+    private var cpuLock: android.os.PowerManager.WakeLock? = null
+
     // ---------------------------------------------------------------- 生命周期
 
     override fun onServiceConnected() {
@@ -97,6 +101,7 @@ class AgentService : AccessibilityService() {
             notificationTimeout = 80
         }
         becomeForeground()
+        acquireCpuLock()
         // 主动读一次当前窗口：lastPkg 若只靠窗口变化事件维护，服务启动时屏幕静止 ⇒ 一直是空，
         // 会让 /selftest 的 foreground_known 误报（上一版实测就是这样）
         try {
@@ -130,8 +135,24 @@ class AgentService : AccessibilityService() {
         serverTag.set(false)
         try { server?.close() } catch (_: Exception) {}
         pool.shutdownNow()
+        try { cpuLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}
+        cpuLock = null
         instance = null
         super.onDestroy()
+    }
+
+    private fun acquireCpuLock() {
+        if (cpuLock?.isHeld == true) return
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            cpuLock = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "phoneagent:cpu").apply {
+                setReferenceCounted(false)
+            }
+            cpuLock?.acquire()
+            AgentLog.line(this, "cpu wakelock acquired")
+        } catch (e: Exception) {
+            AgentLog.line(this, "cpu wakelock failed: ${e.message}")
+        }
     }
 
     private fun becomeForeground() {
@@ -278,6 +299,7 @@ class AgentService : AccessibilityService() {
                 "epoch" to UiTree.epoch.get(), "last_event_ms" to lastEventAt,
                 "screen" to uiSizeJson()))
             method == "GET" && path == "/selftest" -> jsonResp(selftestJson())
+            method == "GET" && path == "/wake" -> getWake(query)
             method == "POST" && path == "/act" -> postAct(body)
             method == "POST" && path == "/tap" -> postTap(body)
             method == "POST" && path == "/swipe" -> postSwipe(body)
@@ -830,7 +852,7 @@ class AgentService : AccessibilityService() {
         val (w, h) = uiSize()
         return arrayOf(
             "api" to Build.VERSION.SDK_INT,
-            "build" to "v12-final",           // 装了哪一版的凭据（免得以为跑的是新包其实是旧的）
+            "build" to "v14-tabs",           // 装了哪一版的凭据（免得以为跑的是新包其实是旧的）
             "release" to Build.VERSION.RELEASE,
             "model" to Build.MODEL,
             "brand" to Build.BRAND,
@@ -937,6 +959,51 @@ class AgentService : AccessibilityService() {
         } catch (e: Exception) {
             instance != null
         }
+    }
+
+    /** 点亮屏幕并按需解掉滑动锁（?keep=1 表示 10 分钟内别再灭屏）。
+     *  密码/指纹锁解不开——那属于系统安全，App 没有也不该有这个权限，只能如实回报 secure=true。 */
+    private fun getWake(query: String): Resp {
+        val keepOn = Regex("keep=(1|true)").containsMatchIn(query)
+        var screenOn = false
+        var keyguardDismissed = false
+        var secure = false
+        var note = ""
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            @Suppress("DEPRECATION")
+            val wl = pm.newWakeLock(
+                android.os.PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                        android.os.PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                        android.os.PowerManager.ON_AFTER_RELEASE,
+                "phoneagent:screen"
+            )
+            wl.acquire(if (keepOn) 10 * 60 * 1000L else 8000L)
+            screenOn = true
+        } catch (e: Exception) {
+            note = "wake failed: ${e.message}"
+        }
+        try {
+            val km = getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+            secure = km.isKeyguardSecure
+            if (km.isKeyguardLocked && !secure) {
+                @Suppress("DEPRECATION")
+                val kl = km.newKeyguardLock("phoneagent")
+                kl.disableKeyguard()
+                keyguardDismissed = true
+                // 不长期持有：3 秒后还回去，避免整个 App 生命周期都挂在"免锁"状态
+                mainHandler.postDelayed({ try { kl.reenableKeyguard() } catch (_: Exception) {} }, 3000)
+            }
+        } catch (e: Exception) {
+            if (note.isEmpty()) note = "keyguard: ${e.message}"
+        }
+        return jsonResp(json(
+            "screen_on" to screenOn,
+            "keyguard_locked" to keyguardDismissed,
+            "secure" to secure,
+            "keep" to keepOn,
+            "note" to note
+        ))
     }
 
     private fun jsonResp(o: JSONObject) = Resp("OK", "application/json", o.toString())
