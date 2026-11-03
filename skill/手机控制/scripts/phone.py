@@ -1004,7 +1004,16 @@ def type_text(ctx, text):
         # NO_EDITABLE = 找不到可编辑节点；TYPE_UNCONFIRMED = 写进去了但回读为空。
         # 两种都说明这个输入框不吃 ACTION_SET_TEXT（闲鱼、部分 Flutter 页），一律降级。
         if "NO_EDITABLE" in body or "TYPE_UNCONFIRMED" in body:
-            print("（输入框是自绘控件，无障碍写不进去 → 降级用 ADBKeyboard 广播）")
+            # 先试端侧自带输入法（/ime，不需要 adb）；失败再退 ADBKeyboard（要 adb）
+            st2, b2 = agent_call(ctx, "POST", "/ime", {"text": text}, timeout=25)
+            if st2 == 200:
+                try:
+                    j = json.loads(b2)
+                except Exception:
+                    j = {}
+                if j.get("ok"):
+                    return True
+            print("（自绘输入框：端侧输入法注入没成功，再试 ADBKeyboard）")
             return type_via_ime(ctx, text)
         print("AGENT_TYPE_FAILED %s: %s" % (st, body[:160]))
         return False
@@ -1018,6 +1027,9 @@ def type_text(ctx, text):
 def type_via_ime(ctx, text):
     """用 ADBKeyboard 广播注入。自绘输入框、中文、emoji 都靠它。
     IME 的恢复放在 finally：中途失败也必须把输入法切回去（上一版失败就留在 ADBKeyboard）。"""
+    if not ctx.adb_bin:
+        print("TYPE_UNSUPPORTED: 端侧输入法注入没成功，且本机没配 adb（ADBKeyboard 兜底不可用）")
+        return False
     have = ctx.sh("pm list packages com.android.adbkeyboard", timeout=25)
     if "adbkeyboard" not in have:
         print("NEED_IME：中文/emoji 只能靠 ADBKeyboard 注入，本机还没装。跑：")
