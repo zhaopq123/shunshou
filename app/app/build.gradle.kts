@@ -13,8 +13,8 @@ android {
         // （docs/COMPATIBILITY.md 的能力阶梯；低于 24 只读不写，本 App 直接拒绝安装）
         minSdk = 24
         targetSdk = 34
-        versionCode = 14
-        versionName = "1.2.0"
+        versionCode = 15
+        versionName = "1.3.0"
     }
 
     buildTypes {

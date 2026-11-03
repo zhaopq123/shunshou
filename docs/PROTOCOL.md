@@ -96,6 +96,47 @@ v5 起加 `flag_include_not_important`、`default_tree`）。
 
 > 未加 `?keep` 时只点一次屏，灭屏时间按系统设置走。
 
+### `GET /files` · `POST /file` · `GET /file` —— 文件互传（v15）
+
+| 接口 | 做什么 |
+|---|---|
+| `POST /file?name=<名>` | body 是**原始字节**（不是 JSON）。落两份：App 私有目录（`GET` 从这里读）+ Android 10+ 的「下载/顺手」（媒体库可见） |
+| `GET /file?name=<名>` | 取回私有副本，`Content-Type` 按扩展名给 |
+| `GET /files` | `{files:[{name,size,mtime}]}`，按修改时间倒序 |
+
+上传响应：`{name,size,path,public_uri?}`；`public_uri` 是 MediaStore 的 `content://` 地址，缺失说明媒体库写入失败（`public_error` 会带原因）。
+客户端若发 `Expect: 100-continue`，服务端先回 100 再读 body；服务端按 `Content-Length` 精确读满，不依赖 EOF。
+
+### `POST /install?name=<apk>`
+
+从「下载/顺手」里按文件名找 APK，用 `content://` URI 拉起系统安装器。
+**只到安装页**，最后一下「安装」必须人点——无障碍服务没有 `INSTALL_PACKAGES`，静默安装系统不给。
+Android 10 以下返回 `INSTALL_UNSUPPORTED`（安装器拿不到 content URI）。
+
+### `POST /open {pkg|url|action}`
+
+三选一：包名启动应用 / URL 开链接 / 系统动作别名。
+别名：`settings wifi bluetooth data flight display sound battery apps storage locale camera dial browser market clock`；
+也可直接传完整 action（以 `android.` 开头）。
+
+### `GET /apps?q=<关键词>`
+
+`{apps:[{label,pkg,launchable,system}]}`。需要 `QUERY_ALL_PACKAGES`，没有时会带 `LIST_PARTIAL`。
+
+### `GET /settings?ns=&key=` · `POST /settings {ns,key,value}`
+
+`ns ∈ system | secure | global`。写需要 `WRITE_SECURE_SETTINGS`（adb 一次性 `pm grant`）；
+写后必回读，`ok=false` 说明被权限或 ROM 拦下，`hint` 给原因。
+
+### `GET /clipboard` · `POST /clipboard {text}`
+
+Android 10+ 后台读剪贴板会被系统拒绝，读不到时返回空串并带 `hint`，不假装成功。
+
+### `GET /volume?stream=` · `POST /volume {stream,delta|percent}`
+
+`stream ∈ music ring alarm notification call`。音量是 AudioManager 的公开接口，**免权限**，
+这是少数"真的能替用户拨开关"的系统项（WiFi/蓝牙做不到，只能跳面板）。
+
 ### `GET /selftest`
 ```
 {"pass":false,"port":8712,"checks":[

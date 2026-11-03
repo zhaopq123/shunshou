@@ -219,45 +219,104 @@ class AgentService : AccessibilityService() {
     private fun handle(sock: Socket) {
         sock.soTimeout = 20000
         val ins: InputStream = sock.getInputStream()
-        val reader = BufferedReader(ins.reader())
-        val reqLine = reader.readLine() ?: return
-        val parts = reqLine.split(" ")
+        // 不能再用 BufferedReader：文件上传的 body 是原始字节，字符流的预读会把二进制吞进缓冲里。
+        val head = readHead(ins) ?: return
+        val parts = head.first.split(" ")
         if (parts.size < 2) return
         val method = parts[0].uppercase()
         val pathQ = parts[1]
         val path = pathQ.substringBefore("?")
-        val headers = HashMap<String, String>()
-        while (true) {
-            val ln = reader.readLine() ?: break
-            if (ln.isEmpty()) break
-            val i = ln.indexOf(':')
-            if (i > 0) headers[ln.substring(0, i).trim().lowercase()] = ln.substring(i + 1).trim()
-        }
+        val query = pathQ.substringAfter("?", "")
+        val headers = head.second
         val token = headers["x-agent-token"] ?: headers["authorization"]?.removePrefix("Bearer ")
         val needAuth = AgentPrefs.token(this).isNotEmpty()
         if (needAuth && token != AgentPrefs.token(this)) {
             write(sock, 401, "application/json", json("error" to "BAD_TOKEN").toString())
             return
         }
-        var body = ""
-        val cl = headers["content-length"]?.toIntOrNull() ?: 0
-        if (method == "POST" && cl > 0) {
-            val buf = CharArray(cl)
-            var got = 0
-            while (got < cl) {
-                val r = reader.read(buf, got, cl - got)
-                if (r < 0) break
-                got += r
-            }
-            body = String(buf, 0, got)
+        // .NET / PowerShell 默认 Expect: 100-continue；不回这一行，客户端会先等 1~2 秒
+        // 再自己发 body，最后把"服务端已处理"误报成连接被意外关闭（实测上传时踩到）
+        if (headers["expect"]?.lowercase()?.contains("100-continue") == true) {
+            val out0 = sock.getOutputStream()
+            out0.write("HTTP/1.1 100 Continue\r\n\r\n".toByteArray())
+            out0.flush()
         }
+        val cl = headers["content-length"]?.toLongOrNull() ?: 0L
         val t0 = System.currentTimeMillis()
-        val resp = route(method, path, body, pathQ.substringAfter("?", ""))
+        // 上传：body 是原始字节，流式落盘，不进内存
+        if (method == "POST" && path == "/file") {
+            val name = Caps.safeName(qParam(query, "name"))
+            val resp = jsonResp(Caps.save(this, name, ins, cl))
+            write(sock, 200, resp.type, resp.text)
+            resp.log(reqId.incrementAndGet(), method, path, System.currentTimeMillis() - t0)
+            return
+        }
+        val body = if (method == "POST" && cl > 0) readBody(ins, cl) else ""
+        val resp = route(method, path, body, query)
         // 只有 OK 算 200；FRAME_FAILED / NO_ROOT / UNSUPPORTED 这些都必须是非 2xx，
         // 否则客户端会把错误 JSON 当图片存下来（第一版就这样把 96 字节的错误存成了 .png）
         write(sock, if (resp.code == "OK") 200 else 400, resp.type, resp.text,
               resp.bytes, resp.extra)
         resp.log(reqId.incrementAndGet(), method, path, System.currentTimeMillis() - t0)
+    }
+
+    /** 按字节读请求头。字符流会在二进制 body 之前预读，混用必丢字节；头超过 64KB 视为异常。 */
+    private fun readHead(ins: InputStream): Pair<String, MutableMap<String, String>>? {
+        val line = StringBuilder()
+        val headers = HashMap<String, String>()
+        var reqLine: String? = null
+        val one = ByteArray(1)
+        var bytes = 0
+        while (true) {
+            if (ins.read(one) < 0) return null
+            bytes++
+            if (bytes > 65536) return null
+            val c = one[0].toInt()
+            when {
+                c == 13 -> {}
+                c == 10 -> {
+                    val s = line.toString()
+                    line.setLength(0)
+                    if (reqLine == null) {
+                        if (s.isEmpty()) return null
+                        reqLine = s
+                    } else if (s.isEmpty()) {
+                        return Pair(reqLine!!, headers)
+                    } else {
+                        val i = s.indexOf(':')
+                        if (i > 0) headers[s.substring(0, i).trim().lowercase()] = s.substring(i + 1).trim()
+                    }
+                }
+                else -> line.append(c.toChar())
+            }
+        }
+    }
+
+    private fun readBody(ins: InputStream, cl: Long): String {
+        if (cl <= 0 || cl > 8L * 1024 * 1024) return ""
+        val bytes = ByteArray(cl.toInt())
+        var got = 0
+        while (got < bytes.size) {
+            val r = ins.read(bytes, got, bytes.size - got)
+            if (r < 0) break
+            got += r
+        }
+        return String(bytes, 0, got)
+    }
+
+    /** query 里按 key 取值并 URL 解码（中文文件名必须解码，否则落盘名会是一串 %E4…） */
+    private fun qParam(q: String, key: String): String {
+        for (kv in q.split("&")) {
+            val i = kv.indexOf('=')
+            if (i > 0 && kv.substring(0, i) == key) {
+                return try {
+                    java.net.URLDecoder.decode(kv.substring(i + 1), "UTF-8")
+                } catch (e: Exception) {
+                    kv.substring(i + 1)
+                }
+            }
+        }
+        return ""
     }
 
     private data class Resp(val code: String, val type: String, val text: String,
@@ -306,8 +365,82 @@ class AgentService : AccessibilityService() {
             method == "POST" && path == "/key" -> postKey(body)
             method == "POST" && path == "/text" -> postText(body)
             method == "POST" && path == "/alias" -> postAlias(body)
+            // ---- v15 能力扩展：文件 / 应用 / 入口 / 设置 / 剪贴板 ----
+            // 上传走 /file POST，在 handle() 里按字节直读，不进这里（这里只收文本 body）
+            method == "GET" && path == "/file" -> getFile(query)
+            method == "GET" && path == "/files" -> jsonResp(json("files" to Caps.listFiles(this)))
+            method == "POST" && path == "/install" ->
+                jsonResp(Caps.install(this, Caps.safeName(qParam(query, "name"))))
+            method == "POST" && path == "/open" -> postOpen(body)
+            method == "GET" && path == "/apps" -> jsonResp(json("apps" to Caps.apps(this, qParam(query, "q"))))
+            method == "GET" && path == "/settings" -> getSettings(query)
+            method == "POST" && path == "/settings" -> postSettings(body)
+            method == "GET" && path == "/clipboard" -> jsonResp(Caps.clipGet(this))
+            method == "POST" && path == "/clipboard" -> postClipboard(body)
+            method == "GET" && path == "/volume" ->
+                jsonResp(Caps.volume(this, qParam(query, "stream").ifEmpty { "music" }, null, null))
+            method == "POST" && path == "/volume" -> postVolume(body)
             else -> Resp("ERR", "application/json", json("error" to "NO_ROUTE", "path" to path).toString())
         }
+    }
+
+    // ---------------------------------------------------------------- 文件 / 入口 / 设置（v15）
+
+    private fun getFile(query: String): Resp {
+        val name = Caps.safeName(qParam(query, "name"))
+        val f = Caps.fileOf(this, name)
+            ?: return Resp(
+                "NO_FILE", "application/json",
+                json("error" to "NO_FILE", "name" to name).toString()
+            )
+        return Resp("OK", Caps.mimeOf(name), "", bytes = f.readBytes())
+    }
+
+    private fun postOpen(body: String): Resp {
+        val o = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+        val pkg = o.optString("pkg", "").ifEmpty { null }
+        val url = o.optString("url", "").ifEmpty { null }
+        val action = o.optString("action", "").ifEmpty { null }
+        return jsonResp(Caps.open(this, pkg, url, action))
+    }
+
+    private fun getSettings(query: String): Resp {
+        val ns = qParam(query, "ns").ifEmpty { "secure" }
+        val key = qParam(query, "key")
+        if (key.isEmpty()) {
+            return Resp("BAD_REQ", "application/json", json("error" to "NEED_KEY").toString())
+        }
+        return jsonResp(json("ns" to ns, "key" to key, "value" to Caps.getSetting(this, ns, key)))
+    }
+
+    private fun postSettings(body: String): Resp {
+        val o = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+        val ns = o.optString("ns", "secure")
+        val key = o.optString("key", "")
+        if (key.isEmpty()) {
+            return Resp("BAD_REQ", "application/json", json("error" to "NEED_KEY").toString())
+        }
+        val value = o.optString("value", "")
+        val ok = Caps.putSetting(this, ns, key, value)
+        return jsonResp(json(
+            "ok" to ok,
+            "ns" to ns,
+            "key" to key,
+            "value" to Caps.getSetting(this, ns, key),
+            "hint" to if (!ok) "写不进去：这个命名空间需要 WRITE_SECURE_SETTINGS（adb 一次性 pm grant）" else ""
+        ))
+    }
+
+    private fun postClipboard(body: String): Resp {
+        val o = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+        return jsonResp(Caps.clipSet(this, o.optString("text", "")))
+    }
+
+    private fun postVolume(body: String): Resp {
+        val o = try { JSONObject(body) } catch (e: Exception) { JSONObject() }
+        val delta = if (o.has("delta")) o.optInt("delta") else null
+        val percent = if (o.has("percent")) o.optInt("percent") else null
+        return jsonResp(Caps.volume(this, o.optString("stream", "music"), delta, percent))
     }
 
     /**
@@ -852,7 +985,7 @@ class AgentService : AccessibilityService() {
         val (w, h) = uiSize()
         return arrayOf(
             "api" to Build.VERSION.SDK_INT,
-            "build" to "v14-tabs",           // 装了哪一版的凭据（免得以为跑的是新包其实是旧的）
+            "build" to "v15-caps",           // 装了哪一版的凭据（免得以为跑的是新包其实是旧的）
             "release" to Build.VERSION.RELEASE,
             "model" to Build.MODEL,
             "brand" to Build.BRAND,

@@ -18,6 +18,12 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
+    <!-- 应用清单与安装（v15）：列全部应用要 QUERY_ALL_PACKAGES；
+         拉起安装器要 REQUEST_INSTALL_PACKAGES，MIUI 上还需在应用详情里允许「安装未知应用」 -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- 权限中心：有这两项才能「一键开/关」直写系统设置，而不是只把人送到设置页。
          WRITE_SECURE_SETTINGS 只能靠 adb 一次性授予（pm grant），普通安装点不出来。 -->
     <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS"

@@ -86,6 +86,18 @@ ph fp [--wait 8]                                 页面指纹；--wait 等页面
 ph batch steps.txt                               多步一次跑完，失败即停
 ph agent-find [--save]                           扫描局域网找手机
 ph agents                                        列出已登记的手机
+
+ph push 本地文件 [--as 手机名]                    推到手机「下载/顺手」
+ph pull 手机文件名 [--out 本地名]                  从手机取回
+ph files                                         列手机上已推的文件
+ph install app.apk                               推到手机并拉起系统安装器
+ph apps [关键词]                                  列应用（label + 包名）
+ph app <包名>                                     直接启动应用
+ph open <url|包名|动作>                           开链接 / 开应用 / 跳系统页
+ph get  secure accessibility_enabled              读系统设置
+ph set  system screen_brightness 128              写系统设置
+ph clip [文字]                                    读/写剪贴板
+ph volume [up|down|0~100] [--stream music]        调音量
 ```
 
 完整命令与选择器规则见 [`skill/手机控制/SKILL.md`](skill/手机控制/SKILL.md)。
@@ -145,7 +157,9 @@ ph -d 0a11ec36 ui --summary   # 也可以用机器 ID 前缀
 - `FLAG_SECURE` 页面（支付、密码）截不到图，这是系统限制
 - 纯血鸿蒙 HarmonyOS NEXT 与 iOS 不支持
 - Android 7.0 以下没有手势注入，只能控件级点击
-- 功能键（音量/电源）、启动 App、装 APK 仍需要 adb —— 端侧只实现了 `back/home/recents/notifications`
+- **静默安装 / 静默卸载**：无障碍服务没有 `INSTALL_PACKAGES`，只能把安装页拉起来让人点最后一下
+- **WiFi / 蓝牙开关**：Android 10+ 普通 App 不能直接改，只能跳设置面板；音量可以（AudioManager 免权限）
+- 电源键、硬件键的"长按"仍需要 adb
 
 ---
 
@@ -167,6 +181,7 @@ app/                  Android 工程（Gradle）
     UiTree.kt         节点树 → 与 uiautomator 同 schema 的 XML
     MainActivity.kt   界面（概览 / 权限 / 设置 三页）
     GrantCenter.kt    权限中心：一键开/关，逐项状态与跳转
+    Caps.kt           文件互传、装 APK、开任意入口、应用清单、设置读写、剪贴板、音量
 skill/手机控制/       电脑端技能包
   scripts/phone.py    全部 CLI
   SKILL.md            命令表与踩坑记录

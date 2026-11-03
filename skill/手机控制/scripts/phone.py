@@ -67,6 +67,7 @@ import sys
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -238,6 +239,30 @@ def agent_get_bytes(ctx, path, timeout=30):
         return e.code, e.read(), dict(e.headers or {})
     except Exception as e:
         return 0, ("AGENT_OFFLINE: %s" % e).encode(), {}
+
+
+def agent_upload(ctx, local_path, name=None, timeout=180):
+    """把本地文件推到手机（POST /file，body 是原始字节）。返回 (status, text)。"""
+    base = agent_base(ctx)
+    if not base:
+        return 0, "AGENT_OFFLINE: 没配 agent_host"
+    if not os.path.isfile(local_path):
+        return 0, "NO_LOCAL_FILE: %s" % local_path
+    name = name or os.path.basename(local_path)
+    q = urllib.parse.urlencode({"name": name})
+    h = {"Content-Type": "application/octet-stream"}
+    if agent_token():
+        h["X-Agent-Token"] = agent_token()
+    with open(local_path, "rb") as f:
+        data = f.read()
+    req = urllib.request.Request(base + "/file?" + q, data=data, headers=h, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", "replace")
+    except Exception as e:
+        return 0, "AGENT_OFFLINE: %s" % e
 
 
 def agent_ready(ctx):
@@ -2098,7 +2123,14 @@ def cmd_focus(ctx, args):
 
 
 def cmd_app(ctx, args):
-    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
+    if use_agent(ctx):
+        st, body = agent_call(ctx, "POST", "/open", {"pkg": args.package}, timeout=20)
+        if st == 200:
+            print("LAUNCHED %s" % args.package)
+            return 0
+        print("LAUNCH_FAILED: %s" % body[:300])
+        return 3
+    ctx._agent = False          # 没有 agent 通道时退回 adb
     need(ctx)
     ctx.sh("monkey -p %s -c android.intent.category.LAUNCHER 1" % args.package, timeout=30)
     print("LAUNCHED %s" % args.package)
@@ -2120,7 +2152,28 @@ def cmd_drag(ctx, args):
 
 
 def cmd_install(ctx, args):
-    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
+    if use_agent(ctx):
+        name = os.path.basename(args.apk)
+        st, body = agent_upload(ctx, args.apk, name)
+        if st != 200:
+            print("PUSH_FAILED: %s" % body[:300])
+            return 3
+        st2, b2 = agent_call(ctx, "POST", "/install?" + urllib.parse.urlencode({"name": name}),
+                             {}, timeout=25)
+        if st2 != 200:
+            print("INSTALL_LAUNCH_FAILED: %s" % b2[:300])
+            return 3
+        try:
+            j = json.loads(b2)
+        except Exception:
+            j = {}
+        if not j.get("ok"):
+            print("INSTALL_FAILED: %s" % b2[:300])
+            return 3
+        print("INSTALLER_OPENED %s" % b2)
+        print("提示：最后一下「安装」要在手机上点；小米若拦「未知应用」，去应用详情允许")
+        return 0
+    ctx._agent = False          # 没有 agent 通道时退回 adb
     need(ctx)
     ok, out = install_apk(ctx, args.apk, args.timeout)
     print(out or "（pm install 无输出）")
@@ -2136,11 +2189,178 @@ def cmd_stop(ctx, args):
 
 
 def cmd_open(ctx, args):
-    ctx._agent = False          # 这类命令只有 adb 能做（agent 没有对应路由），强制走 adb
+    """开任意入口：URL / 包名 / 系统动作别名。agent 通道优先，adb 只在有 URL 时兜底。"""
+    pkg, url, action = args.pkg, None, args.action
+    if args.target:
+        t = args.target
+        if re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", t) or t.startswith("www."):
+            url = t
+        elif "." in t and "/" not in t:
+            pkg = pkg or t
+        else:
+            action = action or t
+    if use_agent(ctx):
+        obj = {}
+        if pkg:
+            obj["pkg"] = pkg
+        if url:
+            obj["url"] = url
+        if action:
+            obj["action"] = action
+        st, body = agent_call(ctx, "POST", "/open", obj, timeout=20)
+        if st == 200:
+            print("OPENED %s" % body)
+            return 0
+        print("OPEN_FAILED: %s" % body[:300])
+        return 3
+    ctx._agent = False
     need(ctx)
-    out = (ctx.sh("am start -a android.intent.action.VIEW -d '%s'" % args.url, timeout=40)
-           or "").strip()
-    print(out[:160] or ("OPENED %s" % args.url))
+    if not url:
+        print("ADB_ONLY_URL: 没有 agent 通道时，open 只支持 URL（包名/系统动作要走端侧）")
+        return 3
+    out = (ctx.sh("am start -a android.intent.action.VIEW -d '%s'" % url, timeout=40) or "").strip()
+    print(out[:160] or ("OPENED %s" % url))
+    return 0
+
+
+def cmd_push(ctx, args):
+    """文件推到手机（落「下载/顺手」，Android 10+ 同时可见于文件管理）"""
+    st, body = agent_upload(ctx, args.local, args.as_name)
+    if st != 200:
+        print("PUSH_FAILED: %s" % body[:300])
+        return 3
+    print("PUSHED %s" % body)
+    return 0
+
+
+def cmd_pull(ctx, args):
+    """从手机取文件（按名字，取的是 push 上去的私有副本）"""
+    q = urllib.parse.urlencode({"name": args.name})
+    st, data, _ = agent_get_bytes(ctx, "/file?" + q, timeout=120)
+    if st != 200:
+        print("PULL_FAILED: %s" % data[:300].decode("utf-8", "replace"))
+        return 3
+    out = args.out or os.path.basename(args.name)
+    with open(out, "wb") as f:
+        f.write(data)
+    print("PULLED %s %d bytes" % (out, len(data)))
+    return 0
+
+
+def cmd_files(ctx, args):
+    st, body = agent_call(ctx, "GET", "/files", timeout=20)
+    if st != 200:
+        print("FILES_FAILED: %s" % body[:300])
+        return 3
+    try:
+        arr = json.loads(body).get("files", [])
+    except Exception:
+        print(body[:300])
+        return 3
+    for f in arr:
+        print("%-40s %10d  %s" % (f.get("name"), f.get("size", 0),
+                                  time.strftime("%m-%d %H:%M", time.localtime((f.get("mtime", 0) or 0) / 1000))))
+    print("# %d 个文件" % len(arr))
+    return 0
+
+
+def cmd_apps(ctx, args):
+    q = urllib.parse.urlencode({"q": args.keyword or ""})
+    st, body = agent_call(ctx, "GET", "/apps?" + q, timeout=25)
+    if st != 200:
+        print("APPS_FAILED: %s" % body[:300])
+        return 3
+    try:
+        arr = json.loads(body).get("apps", [])
+    except Exception:
+        print(body[:300])
+        return 3
+    for a in arr[:args.limit]:
+        print("%-24s %s%s" % (a.get("label"), a.get("pkg"),
+                              "" if a.get("launchable") else "  (不可启动)"))
+    print("# %d 个应用" % len(arr))
+    return 0
+
+
+def cmd_get(ctx, args):
+    q = urllib.parse.urlencode({"ns": args.ns, "key": args.key})
+    st, body = agent_call(ctx, "GET", "/settings?" + q, timeout=15)
+    if st != 200:
+        print("GET_FAILED: %s" % body[:300])
+        return 3
+    try:
+        print(json.loads(body).get("value"))
+    except Exception:
+        print(body[:300])
+        return 3
+    return 0
+
+
+def cmd_set(ctx, args):
+    st, body = agent_call(ctx, "POST", "/settings",
+                          {"ns": args.ns, "key": args.key, "value": args.value}, timeout=15)
+    if st != 200:
+        print("SET_FAILED: %s" % body[:300])
+        return 3
+    try:
+        j = json.loads(body)
+    except Exception:
+        print(body[:300])
+        return 3
+    print("SET %s/%s = %s" % (j.get("ns"), j.get("key"), j.get("value")))
+    if not j.get("ok"):
+        print("HINT: %s" % j.get("hint"))
+        return 3
+    return 0
+
+
+def cmd_clip(ctx, args):
+    if args.text:
+        st, body = agent_call(ctx, "POST", "/clipboard", {"text": args.text}, timeout=15)
+        if st != 200:
+            print("CLIP_FAILED: %s" % body[:300])
+            return 3
+        print("CLIP_SET %d 字" % len(args.text))
+        return 0
+    st, body = agent_call(ctx, "GET", "/clipboard", timeout=15)
+    if st != 200:
+        print("CLIP_FAILED: %s" % body[:300])
+        return 3
+    try:
+        print(json.loads(body).get("text", ""))
+    except Exception:
+        print(body[:300])
+        return 3
+    return 0
+
+
+def cmd_volume(ctx, args):
+    """读音量；up/down 调一格；给 0~100 直接设百分比"""
+    stream = args.stream
+    v = args.value
+    if v is None:
+        q = urllib.parse.urlencode({"stream": stream})
+        st, body = agent_call(ctx, "GET", "/volume?" + q, timeout=15)
+    elif v in ("up", "down"):
+        st, body = agent_call(ctx, "POST", "/volume",
+                              {"stream": stream, "delta": 1 if v == "up" else -1}, timeout=15)
+    else:
+        try:
+            pct = int(v)
+        except ValueError:
+            print("BAD_VALUE: volume 只收 up / down / 0~100")
+            return 4
+        st, body = agent_call(ctx, "POST", "/volume",
+                              {"stream": stream, "percent": pct}, timeout=15)
+    if st != 200:
+        print("VOLUME_FAILED: %s" % body[:300])
+        return 3
+    try:
+        j = json.loads(body)
+    except Exception:
+        print(body[:300])
+        return 3
+    print("音量 %s = %s/%s" % (j.get("stream"), j.get("volume"), j.get("max")))
     return 0
 
 
@@ -2228,7 +2448,38 @@ def main():
     s = sub.add_parser("drag"); s.add_argument("start"); s.add_argument("end"); s.add_argument("--ms", type=int, default=400); s.set_defaults(fn=cmd_drag)
     s = sub.add_parser("install"); s.add_argument("apk"); s.add_argument("--timeout", type=int, default=120); s.set_defaults(fn=cmd_install)
     s = sub.add_parser("stop"); s.add_argument("package"); s.set_defaults(fn=cmd_stop)
-    s = sub.add_parser("open"); s.add_argument("url"); s.set_defaults(fn=cmd_open)
+    s = sub.add_parser("open", help="开 URL / 应用包名 / 系统动作别名（wifi/bluetooth/camera/dial/sms…）")
+    s.add_argument("target", nargs="?", default="")
+    s.add_argument("--pkg"); s.add_argument("--action")
+    s.set_defaults(fn=cmd_open)
+    s = sub.add_parser("push", help="把本地文件推到手机「下载/顺手」")
+    s.add_argument("local"); s.add_argument("--as", dest="as_name", default=None)
+    s.set_defaults(fn=cmd_push)
+    s = sub.add_parser("pull", help="从手机取回 push 上去的文件")
+    s.add_argument("name"); s.add_argument("--out", default=None)
+    s.set_defaults(fn=cmd_pull)
+    s = sub.add_parser("files", help="列出手机上已 push 的文件")
+    s.set_defaults(fn=cmd_files)
+    s = sub.add_parser("apps", help="列出手机应用（可按关键词过滤）")
+    s.add_argument("keyword", nargs="?", default="")
+    s.add_argument("--limit", type=int, default=30)
+    s.set_defaults(fn=cmd_apps)
+    s = sub.add_parser("get", help="读系统设置：get secure accessibility_enabled")
+    s.add_argument("ns", choices=["system", "secure", "global"])
+    s.add_argument("key")
+    s.set_defaults(fn=cmd_get)
+    s = sub.add_parser("set", help="写系统设置：set secure accessibility_enabled 1")
+    s.add_argument("ns", choices=["system", "secure", "global"])
+    s.add_argument("key"); s.add_argument("value")
+    s.set_defaults(fn=cmd_set)
+    s = sub.add_parser("clip", help="读剪贴板；给文字则写入")
+    s.add_argument("text", nargs="?", default="")
+    s.set_defaults(fn=cmd_clip)
+    s = sub.add_parser("volume", help="读音量；up/down 调一格；0~100 直接设")
+    s.add_argument("value", nargs="?", default=None)
+    s.add_argument("--stream", default="music",
+                   choices=["music", "ring", "alarm", "notification", "call"])
+    s.set_defaults(fn=cmd_volume)
     s = sub.add_parser("sh"); s.add_argument("cmd", nargs="+"); s.set_defaults(fn=cmd_sh)
 
     args = p.parse_args()
