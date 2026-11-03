@@ -585,6 +585,21 @@ def screen_asleep(ctx):
     return "Asleep" in out
 
 
+def _has_content(root, need=3):
+    """树"活着但内容空"的判定：闲鱼跑久了会退化成只剩状态栏的骨架，
+    XML 合法但一条业务文本都没有 —— 上层会误以为"这屏没东西"，
+    实际是树坏了。少于 need 条业务文本就当空壳。"""
+    n = 0
+    for node in root.iter("node"):
+        t = (node.get("text") or "").strip()
+        d = (node.get("content-desc") or "").strip()
+        if len(t) > 1 or len(d) > 1:
+            n += 1
+            if n >= need:
+                return True
+    return False
+
+
 def dump_ui(ctx, tries=4, path="/sdcard/_ui.xml", rounds=3):
     """UI 树。这条链上有三个真坑，都在这儿处理掉：
 
@@ -606,9 +621,24 @@ def dump_ui(ctx, tries=4, path="/sdcard/_ui.xml", rounds=3):
         st, body = agent_call(ctx, "GET", "/ui", timeout=30)
         if st == 200 and "<hierarchy" in body:
             try:
-                return ET.fromstring(body)
+                root = ET.fromstring(body)
             except ET.ParseError:
-                pass
+                root = None
+            if root is not None:
+                if _has_content(root):
+                    return root
+                # 空壳：再等再取两次，仍空就把这份返回给上层（上层可据此强杀重启）
+                for _ in range(2):
+                    time.sleep(0.9)
+                    st2, body2 = agent_call(ctx, "GET", "/ui", timeout=30)
+                    if st2 == 200 and "<hierarchy" in body2:
+                        try:
+                            r2 = ET.fromstring(body2)
+                        except ET.ParseError:
+                            continue
+                        if _has_content(r2):
+                            return r2
+                return root
         # 读不到就是读不到：不偷偷退回 adb（那会变成"看起来走了新通道其实没有"）
         return None
     if not os.environ.get("PHONE_NO_U2"):
